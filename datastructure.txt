@@ -1,0 +1,32 @@
+ <span class="item item-astrolure">
+        <span class="item-icon" style="min-width: 40px; min-height: 40px">
+            <span typeof="mw:File">
+                <a href="/wiki/Astrolure" title="Astrolure">
+                    <img src="//static.wikitide.net/fischwiki/thumb/d/d6/Bait_Astrolure.png/40px-Bait_Astrolure.png"
+                        decoding="async" loading="lazy" width="40" height="40" class="mw-file-element"
+                        srcset="//static.wikitide.net/fischwiki/thumb/d/d6/Bait_Astrolure.png/80px-Bait_Astrolure.png 2x"
+                        data-file-width="800" data-file-height="800" />
+                </a>
+            </span>
+        </span>
+        <span class="item-text rarity-limited">
+            <a href="/wiki/Astrolure" title="Astrolure">Astrolure</a>
+        </span>
+    </span>
+
+
+name = windown.location.href.split('/')[-1]
+[
+    name: {
+        classContain: "item",
+        icon: {
+            href: querySelector('img').src || ""
+            name: querySelector('a').title || ""
+        },
+        content: {
+            name: querySelector('.item-text a').title
+            href: querySelector('.item-text a').href
+        }
+        type: bait | fish | rod | npc | item | 
+    }
+]
