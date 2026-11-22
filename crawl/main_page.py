@@ -1,12 +1,7 @@
 import asyncio
 from urllib.parse import parse_qs, urlparse
-
-try:
-    from crawl.browser import build_api_url, fetch_wiki_api_soup
-    from crawl.fisch import fish_soup
-except ModuleNotFoundError:
-    from browser import build_api_url, fetch_wiki_api_soup
-    from fisch import fish_soup
+from browser import build_api_url, fetch_wiki_api_soup
+from fisch import fish_soup
 
 MAIN_API_URL = build_api_url("Fisch_Wiki")
 NAVIGATOR = [
