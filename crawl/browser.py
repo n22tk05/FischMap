@@ -11,8 +11,7 @@ API_URL = "https://fischipedia.org/w/api.php"
 USER_AGENT = "FischMapBot/1.0 (local research script)"
 
 _COOKIE_JAR = http.cookiejar.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIE_JAR))
-
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIE_JAR))    
 
 def build_api_url(page_title: str, api_url: str = API_URL) -> str:
     """Build the MediaWiki Action API parse URL for a given page title."""

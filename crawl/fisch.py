@@ -4,6 +4,9 @@ import re
 import sys
 from pathlib import Path
 from bs4 import BeautifulSoup, Tag
+from browser import fetch_wiki_api_soup
+
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -81,9 +84,10 @@ def fish_soup(soup: BeautifulSoup) -> list[dict[str, object]]:
                     case _:
                         item.setdefault(parent_name, {})[child_name] = value  # type: ignore[index]
             else:
-                name, rarity = name_rarity_soup(cell)
+                name, rarity, link = name_rarity_soup(cell)
                 item[parent_name] = name
                 item["Rarity"] = rarity
+                item["Link"] = link
         result.append(item)
 
     return result
@@ -100,12 +104,12 @@ def locations_soup(cell: Tag) -> list[str]:
         locations.append(text.replace(":", " -"))
     return list(dict.fromkeys(locations))
 
-def name_rarity_soup(cell: Tag) -> [str, str]:
+def name_rarity_soup(cell: Tag) -> [str, str, str]:
     """Extract formatted Rarity"""
     name = cell.find("a").get_text(strip=True)
+    link = cell.find("a").get("href")
     rarity = cell.find("span").get_text(strip=True).split('-')[1][:-1]
-    print(name, rarity)
-    return name, rarity
+    return name, rarity, link
     
     
 
@@ -118,11 +122,11 @@ async def fetch_fish(local_html: str | Path = "fish.html") -> list[dict[str, obj
         soup = await fetch_wiki_api_soup(FISH_API_URL)
     return fish_soup(soup)
 
-
-if __name__ == "__main__":
-    fish_data = asyncio.run(fetch_fish())
-    print(f"Parsed {len(fish_data)} fish entries")
-    out_path = Path("data/fish.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(fish_data, ensure_ascii=False, indent=4), encoding="utf-8")
-    print(f"Created {out_path}")
+async def fisch_detail_soup(url: str):
+    with open("/data.json", f, encoding="utf-8") as f:
+        data = json.load()
+    for fish in data:
+        if "/wiki/" not in fish["Link"]:
+            continue
+        link = fish["Link"].split("/")[-1]
+        soup = fetch_wiki_api_soup(link)

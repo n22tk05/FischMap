@@ -2,7 +2,8 @@ import asyncio
 from urllib.parse import parse_qs, urlparse
 from browser import build_api_url, fetch_wiki_api_soup
 from fisch import fish_soup
-
+from location import location_soup
+from to_json import to_json
 MAIN_API_URL = build_api_url("Fisch_Wiki")
 NAVIGATOR = [
     "Fish",
@@ -60,9 +61,13 @@ async def crawl() -> None:
             case "Fish":
                 soup = await fetch_wiki_api_soup(url)
                 fish_data = fish_soup(soup)
+                to_json(fish_data, "fish")
                 print(f"Parsed {len(fish_data)} fish entries")
-                if fish_data:
-                    print("Sample:", fish_data[0])
+                print(f"Fish Crawl Success")
+            case "Locations": 
+                soup = await fetch_wiki_api_soup(url)
+                locations_data = location_soup(soup)
+                
 
 
 if __name__ == "__main__":
