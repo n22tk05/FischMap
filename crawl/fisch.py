@@ -1,132 +1,105 @@
 import asyncio
-import json
-import re
 import sys
 from pathlib import Path
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
-from browser import fetch_wiki_api_soup
-
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-from to_html import to_html
+import re
 from crawl.browser import build_api_url, fetch_wiki_api_soup
 
+BASE_URL = "https://fischipedia.org"
 FISH_API_URL = build_api_url("Fish")
 
 
-def _clean_hidden_elements(node: Tag) -> None:
-    """Remove tooltip popups and hidden filter/sort spans inside a table."""
-    for hidden in node.select(".ext-floatingui-content, .sortkey"):
-        hidden.decompose()
 
-
-def _clean_text(node: Tag, join_sep: str = " ") -> str:
-    text = node.get_text(join_sep, strip=True)
-    text = re.sub(r"\s*,\s*", ", ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return "" if text in ("-", "—", "None") else text
-
-
-def fish_soup(soup: BeautifulSoup) -> list[dict[str, object]]:
-    """Parse the main fish table (with 2-row grouped headers) into clean nested dicts."""
+async def fish_soup(soup: BeautifulSoup, output_path: str | Path = "data/fish_urls.txt") -> list[str]:
+    """Extract unique fish wiki URLs from #fish-table-main and write them to a .txt file."""
     table = soup.find("table", id="fish-table-main")
     if table is None:
         return []
-    to_html(str(table))
-    _clean_hidden_elements(table)
-    header_rows = table.select("thead tr")
-    if len(header_rows) < 2:
-        all_rows = table.find_all("tr")
-        if len(all_rows) < 2:
-            return []
-        header_rows = all_rows[:2]
-        body_rows = all_rows[2:]
-    else:
-        body_rows = table.select("tbody tr")
-    # Map each column index -> (start_col, end_col, parent_name) from row 0
-    groups: list[tuple[int, int, str]] = []
-    col_idx = 0
-    for th in header_rows[0].find_all("th"):
-        name = _clean_text(th)
-        colspan = int(th.get("colspan", 1))
-        groups.append((col_idx, col_idx + colspan, name))
-        col_idx += colspan
-    # Map each leaf column index -> (parent_name, child_name, is_grouped) from row 1
-    leaf_ths = header_rows[1].find_all("th")
-    col_map: list[tuple[str, str, bool]] = []
-    for idx, th in enumerate(leaf_ths):
-        child_name = _clean_text(th, join_sep="")
-        parent_name, is_grouped = child_name, False
-        for start, end, grp_name in groups:
-            if start <= idx < end:
-                parent_name = grp_name
-                is_grouped = (end - start) > 1
-                break
-        col_map.append((parent_name, child_name, is_grouped))
-    result: list[dict[str, object]] = []
-    for row in body_rows:
-        cells = row.find_all("td")
-        if not cells:
+
+    rows = table.select("tbody tr") or table.find_all("tr")[2:]
+    found_urls: dict[str, None] = {}
+
+    for row in rows:
+        first_cell = row.find("td")
+        if first_cell is None:
             continue
-        item: dict[str, object] = {}
-        for idx, cell in enumerate(cells):
-            if idx >= len(col_map):
-                break
-            value = _clean_text(cell)
-            parent_name, child_name, is_grouped = col_map[idx]
-            if is_grouped:
-                match child_name:
-                    case "Location":
-                        item.setdefault(parent_name, {})["Locations"] = locations_soup(cell)  # type: ignore[index]
-                    case _:
-                        item.setdefault(parent_name, {})[child_name] = value  # type: ignore[index]
-            else:
-                name, rarity, link = name_rarity_soup(cell)
-                item[parent_name] = name
-                item["Rarity"] = rarity
-                item["Link"] = link
-        result.append(item)
+        link = first_cell.find("a", href=True)
+        if link is None:
+            continue
+        href = str(link["href"]).strip().split("#", 1)[0]
+        if not href:
+            continue
+        found_urls.setdefault(urljoin(BASE_URL, href), None)
+
+    urls = list(found_urls.keys())
+    out_file = Path(output_path)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+    print(f"Extracted {len(urls)} fish URLs -> {out_file}")
+
+    page_titles = [url.split('/')[-1] for  url in urls]
+
+    result = []
+    for title in page_titles: 
+        api_url = build_api_url(title)
+        soup = await fetch_wiki_api_soup(api_url)
+        result.append(fish_detail_soup(soup))    
+    return urls
+
+
+def fish_detail_soup(soup:BeautifulSoup) -> list[dict]: 
+    """"""
+    result = []
+    info = fish_info(soup.find(class_="infobox"))
+    # print(info)
 
     return result
 
+def fish_info(cell: Tag | None) -> dict:
+    """Extract key-value metadata from a fish infobox."""
+    if cell is None:
+        return {}
 
-def locations_soup(cell: Tag) -> list[str]:
-    """Extract formatted 'Location - Sublocation' entries from a Location cell."""
-    locations: list[str] = []
-    location_texts = cell.get_text(" ", strip=True)
-    for text in location_texts.split(";"):
-        text = text.strip()
-        if not text or ":" not in text:
+    result: dict[str, object] = {}
+    heading_el = cell.find(class_="heading")
+    result["Name"] = heading_el.get_text(" ", strip=True) if heading_el else ""
+
+    for row in cell.find_all(class_="infobox-datarow"):
+        for hidden in row.select('.ext-floatingui-content, [aria-hidden="true"]'):
+            hidden.decompose()
+
+        heading_node = row.select_one(".data-heading")
+        content_node = row.select_one(".data-content")
+        if heading_node is None or content_node is None:
             continue
-        locations.append(text.replace(":", " -"))
-    return list(dict.fromkeys(locations))
 
-def name_rarity_soup(cell: Tag) -> [str, str, str]:
-    """Extract formatted Rarity"""
-    name = cell.find("a").get_text(strip=True)
-    link = cell.find("a").get("href")
-    rarity = cell.find("span").get_text(strip=True).split('-')[1][:-1]
-    return name, rarity, link
-    
-    
+        data_title = heading_node.get_text(" ", strip=True)
+        li_items = content_node.select("ul li")
+        if li_items:
+            result[data_title] = [li.get_text(" ", strip=True) for li in li_items]
+        else:
+            result[data_title] = content_node.get_text(" ", strip=True)
 
-async def fetch_fish(local_html: str | Path = "fish.html") -> list[dict[str, object]]:
-    """Load fish HTML from a local file if present, otherwise fetch via MediaWiki API URL."""
+    print(result)
+    return result
+
+
+async def fetch_fish_urls(
+    local_html: str | Path = "fish.html",
+    output_path: str | Path = "data/fish_urls.txt",
+) -> list[str]:
+    """Load Fish HTML locally if present, otherwise fetch via MediaWiki API and export URLs."""
     path = Path(local_html)
     if path.is_file():
         soup = BeautifulSoup(path.read_text(encoding="utf-8"), "html.parser")
     else:
         soup = await fetch_wiki_api_soup(FISH_API_URL)
-    return fish_soup(soup)
+    return await fish_soup(soup, output_path=output_path)
 
-async def fisch_detail_soup(url: str):
-    with open("/data.json", f, encoding="utf-8") as f:
-        data = json.load()
-    for fish in data:
-        if "/wiki/" not in fish["Link"]:
-            continue
-        link = fish["Link"].split("/")[-1]
-        soup = fetch_wiki_api_soup(link)
+
+if __name__ == "__main__":
+    asyncio.run(fetch_fish_urls())
