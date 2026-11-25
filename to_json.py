@@ -7,7 +7,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-def to_json(dict: dict, name: str):
+def to_json(dict: list[dict], name: str):
     print(f"Parsed {len(dict)} {name} entries")
     out_path = Path(f"data/{name}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)

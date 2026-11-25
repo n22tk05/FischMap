@@ -13,7 +13,6 @@ if str(ROOT_DIR) not in sys.path:
 from crawl.browser import build_api_url, fetch_wiki_api_soup
 from crawl.fisch import fish_soup
 from crawl.location import location_soup
-from to_json import to_json
 
 BASE_URL = "https://fischipedia.org"
 MAIN_API_URL = build_api_url("Fisch_Wiki")
