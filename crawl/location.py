@@ -1,7 +1,9 @@
 import asyncio
+import json
+import re
 import sys
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 from bs4 import BeautifulSoup, Tag
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -28,19 +30,11 @@ def _parse_gallery(gallery: Tag) -> list[str]:
         if link is None:
             continue
         href = str(link["href"]).strip().split("#", 1)[0]
-        if not href:
+        if not href or "/wiki/File:" in href:
             continue
         found_urls.setdefault(urljoin(BASE_URL, href), None)
 
     return list(found_urls.keys())
-
-def _normalize_image_url(src: str | None) -> str:
-    if not src:
-        return ""
-    if src.startswith("//"):
-        return f"https:{src}"
-    return urljoin(BASE_URL, src)
-
 
 def get_elements_between_headings(heading: Tag) -> dict:
     """Collect all sibling Tag elements after `heading` until the next mw-heading3/mw-heading2."""
@@ -212,37 +206,178 @@ def location_info(cell: Tag | None) -> dict[str, object]:
     result["Information"] = information
     return result
 
+def format_location_json(data: dict | None, link: str = "") -> dict[str, object] | None:
+    """Filter empty entries and map raw location detail into structured JSON schema."""
+    if not data:
+        return None
+
+    info = dict(data.get("Info") or {})
+    name = str(data.get("Name") or info.get("Heading") or "").strip()
+    raw_sections = data.get("Sublocations") or []
+    if not name and not raw_sections:
+        return None
+
+    info_fields = dict(info.get("Information") or {})
+    sea = info_fields.pop("Sea", "")
+    gps_raw = info_fields.pop("GPS", "")
+    gps = re.sub(r"\s*,\s*", ", ", str(gps_raw)).strip() if gps_raw else ""
+
+    sublocations: list[dict[str, object]] = []
+    fishing_locations: list[dict[str, object]] = []
+
+    for sec in raw_sections:
+        if not isinstance(sec, dict):
+            continue
+        sec_name = str(sec.get("Name") or "").strip()
+        descs = [d.strip() for d in (sec.get("Description") or []) if isinstance(d, str) and d.strip()]
+        images = sec.get("Image") or []
+        tables = sec.get("Tables") or []
+
+        if not sec_name and not descs and not images and not tables:
+            continue
+
+        entry: dict[str, object] = {"Name": sec_name}
+        if descs:
+            entry["Description"] = descs
+        if images:
+            entry["Image"] = images
+        if tables:
+            entry["Tables"] = tables
+
+        joined_desc = " ".join(descs).lower()
+        if "fish can be caught" in joined_desc or tables:
+            fishing_locations.append(entry)
+        else:
+            sublocations.append(entry)
+
+    formatted: dict[str, object] = {
+        "Name": name,
+        "Link": link,
+        "Image": info.get("Image", ""),
+        "Sea": sea,
+        "GPS": gps,
+        "Information": info_fields,
+        "Sublocations": sublocations,
+        "FishingLocations": fishing_locations,
+    }
+    return formatted
+
+
+def _load_existing_locations(
+    json_path: str | Path = "data/location.json",
+) -> tuple[list[dict[str, object]], set[str]]:
+    """Load already-crawled valid locations from Location.json so reruns skip them."""
+    path = Path(json_path)
+    if not path.is_file():
+        return [], set()
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return [], set()
+
+    if not isinstance(raw, list):
+        return [], set()
+
+    valid_items: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("Name") or "").strip()
+        if not name and not item.get("Sublocations") and not item.get("FishingLocations"):
+            continue
+        valid_items.append(item)
+        if name:
+            seen_keys.add(name.lower())
+            seen_keys.add(name.replace(" ", "_").lower())
+        link = str(item.get("Link") or "").strip()
+        if link:
+            seen_keys.add(link)
+            slug = unquote(link.rstrip("/").split("/")[-1]).lower()
+            seen_keys.add(slug)
+            seen_keys.add(slug.replace("_", " "))
+
+    return valid_items, seen_keys
+
+
 async def location_soup(
     soup: BeautifulSoup,
     output_path: str | Path = "data/locations_url.txt",
+    json_path: str | Path = "data/Location.json",
+    max_retries: int = 3,
+    retry_delay: float = 1.5,
 ) -> list[str]:
     """Extract unique main and sublocation URLs and write them to a .txt file."""
     galleries = soup.select("ul.gallery")
-    if not galleries:
+    out_file = Path(output_path)
+    if galleries:
+        urls = _parse_gallery(galleries[0])
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+        print(f"Extracted {len(urls)} location URLs -> {out_file}")
+    elif out_file.is_file():
+        urls = [
+            line.strip()
+            for line in out_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and "/wiki/File:" not in line
+        ]
+        print(f"Loaded {len(urls)} cached location URLs from {out_file}")
+    else:
         return []
 
-    found_urls: dict[str, None] = {}
-    for url in _parse_gallery(galleries[0]):
-        found_urls.setdefault(url, None)
-    if len(galleries) > 1:
-        for url in _parse_gallery(galleries[1]):
-            found_urls.setdefault(url, None)
+    result, existing_keys = _load_existing_locations(json_path)
+    if result:
+        print(f"Loaded {len(result)} existing locations from {json_path}")
 
-    urls = list(found_urls.keys())
-    out_file = Path(output_path)
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
-    print(f"Extracted {len(urls)} location URLs -> {out_file}")
+    skipped: list[tuple[int, str, str]] = []
 
-    page_title = [url.split('/')[-1] for url in urls]
+    for idx, url in enumerate(urls, start=1):
+        title = unquote(url.rstrip("/").split("/")[-1])
+        if (
+            url in existing_keys
+            or title.lower() in existing_keys
+            or title.replace("_", " ").lower() in existing_keys
+        ):
+            print(f"Location {idx:<4}: [CACHED] {title}")
+            continue
 
-    result = []
-    for idx, title in enumerate(page_title, start=1):
         api_url = build_api_url(title)
-        soup = await fetch_wiki_api_soup(api_url)
-        detail = location_detail_soup(soup)
-        result.append(detail)
-        print(f"Location {idx:<4}: {detail.get('Name', title)}")
+        detail_soup = await fetch_wiki_api_soup(api_url)
+        raw_detail = location_detail_soup(detail_soup)
+        formatted = format_location_json(raw_detail, link=url)
+        if formatted is None:
+            print(f"Location {idx:<4}: [SKIPPED] {title}")
+            skipped.append((idx, url, title))
+            continue
+        result.append(formatted)
+        existing_keys.update({url, title.lower(), title.replace("_", " ").lower()})
+        print(f"Location {idx:<4}: {formatted['Name']}")
+
+    for attempt in range(1, max_retries + 1):
+        if not skipped:
+            break
+        print(f"\nRetry {attempt}/{max_retries} for {len(skipped)} skipped locations...")
+        next_skipped: list[tuple[int, str, str]] = []
+        for idx, url, title in skipped:
+            await asyncio.sleep(retry_delay)
+            api_url = build_api_url(title)
+            detail_soup = await fetch_wiki_api_soup(api_url)
+            raw_detail = location_detail_soup(detail_soup)
+            formatted = format_location_json(raw_detail, link=url)
+            if formatted is None:
+                print(f"Location {idx:<4}: [SKIPPED {attempt}/{max_retries}] {title}")
+                next_skipped.append((idx, url, title))
+                continue
+            result.append(formatted)
+            existing_keys.update({url, title.lower(), title.replace("_", " ").lower()})
+            print(f"Location {idx:<4}: [RECOVERED] {formatted['Name']}")
+        skipped = next_skipped
+
+    if skipped:
+        print(f"Still skipped after {max_retries} retries: {[t for _, _, t in skipped]}")
+
     to_json(result, "Location")
     return urls
 
@@ -263,17 +398,13 @@ async def fetch_locations(
 async def fetch_location_by_url(target_url: str) -> dict[str, object]:
     """Fetch and parse a single location detail page directly via fetch_wiki_api_soup."""
     soup = await fetch_wiki_api_soup(target_url)
-    detail = location_detail_soup(soup)
-    # to_json(detail, slug)
-    return detail
+    raw_detail = location_detail_soup(soup)
+    formatted = format_location_json(raw_detail, link=target_url)
+    if formatted is not None:
+        to_json(formatted, "locations")
+        return formatted
+    return {}
 
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else input("Nhập URL/tên trang Location (Enter để chạy toàn bộ): ").strip()
-    if target:
-        detail = asyncio.run(fetch_location_by_url(target))
-        print("Parsed:", detail.get("Name", target), "| Sublocations:", len(detail.get("Sublocations", [])))
-    else:
-        urls = asyncio.run(fetch_locations())
-        if urls:
-            print("Sample:", urls[:5])
+    asyncio.run(fetch_locations())
